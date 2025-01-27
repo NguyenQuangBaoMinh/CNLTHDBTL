@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+
+{% block content %}
+  <h1>Chào mừng đến Mạng xã hội Cựu sinh viên</h1>
+  <p>Kết nối với các cựu sinh viên khác và cập nhật tin tức từ trường.</p>
+  
+  <h2>Bài đăng gần đây</h2>
+  <ul>
+    {% for post in recent_posts %}
+      <li>
+        <h3>{{ post.author.username }}</h3>
+        <p>{{ post.content }}</p>
+        <p>Đăng ngày {{ post.created_at }}</p>
+      </li>
+    {% endfor %}
+  </ul>
+  
+  {# Thêm các phần khác như cựu sinh viên nổi bật, sự kiện, v.v. #}
+{% endblock %}

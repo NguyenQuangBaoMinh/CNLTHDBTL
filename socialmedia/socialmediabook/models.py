@@ -3,7 +3,8 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
 from ckeditor.fields import RichTextField
-
+from django.contrib.auth import get_user_model
+from cloudinary.models import CloudinaryField
 
 class User(AbstractUser):
     ROLES = (
@@ -13,7 +14,7 @@ class User(AbstractUser):
     )
 
     role = models.CharField(max_length=10, choices=ROLES)
-    avatar = models.ImageField(upload_to='avatars/', null=True)
+    avatar = CloudinaryField('avatar')
     cover_photo = models.ImageField(upload_to='covers/', null=True)
     student_id = models.CharField(max_length=20, null=True)
     is_verified = models.BooleanField(default=False)
@@ -67,7 +68,7 @@ class Post(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_comments_locked = models.BooleanField(default=False)
-
+    is_public = models.BooleanField(default=True)
     class Meta:
         ordering = ['-created_at']
         verbose_name = 'Post'
@@ -178,3 +179,48 @@ class Event(models.Model):
         ordering = ['-event_date']
         verbose_name = 'Event'
         verbose_name_plural = 'Events'
+
+
+User = get_user_model()
+
+class CommunityGroup(models.Model):
+    PRIVACY_CHOICES = (
+        ('PUBLIC', 'Công khai'),
+        ('PRIVATE', 'Riêng tư'),
+        ('CLOSED', 'Bán công khai')
+    )
+
+    name = models.CharField(max_length=200)
+    description = models.TextField()
+    creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_groups')
+    privacy_type = models.CharField(max_length=10, choices=PRIVACY_CHOICES, default='PUBLIC')
+    created_at = models.DateTimeField(auto_now_add=True)
+    cover_image = models.ImageField(upload_to='group_covers/', null=True, blank=True)
+
+    def __str__(self):
+        return self.name
+
+class GroupMembership(models.Model):
+    ROLE_CHOICES = (
+        ('ADMIN', 'Quản trị viên'),
+        ('MODERATOR', 'Người điều hành'),
+        ('MEMBER', 'Thành viên')
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    group = models.ForeignKey(CommunityGroup, on_delete=models.CASCADE, related_name='memberships')
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='MEMBER')
+    joined_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = ['user', 'group']
+
+class GroupPost(models.Model):
+    group = models.ForeignKey(CommunityGroup, on_delete=models.CASCADE, related_name='posts')
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_pinned = models.BooleanField(default=False)
+    image = models.ImageField(upload_to='group_posts/', null=True, blank=True)
