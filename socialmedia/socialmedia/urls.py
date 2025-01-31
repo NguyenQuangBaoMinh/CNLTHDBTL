@@ -42,7 +42,7 @@ urlpatterns = [
 
     path('o/', include('oauth2_provider.urls', namespace='oauth2_provider')),
 
-
+    # path('api/chat/', include('chat.urls')),
     path('',TemplateView.as_view(template_name='index.html')),
     re_path(r'^ckeditor/',
     include('ckeditor_uploader.urls')),

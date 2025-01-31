@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'drf_yasg',
     'cloudinary',
     'oauth2_provider',
+    # 'chat',
 
 
 ]

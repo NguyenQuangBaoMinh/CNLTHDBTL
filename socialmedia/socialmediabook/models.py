@@ -224,3 +224,34 @@ class GroupPost(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     is_pinned = models.BooleanField(default=False)
     image = models.ImageField(upload_to='group_posts/', null=True, blank=True)
+
+
+class ChatRoom(models.Model):
+    participants = models.ManyToManyField(User, related_name='chat_rooms')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_message = models.TextField(null=True, blank=True)
+    last_message_time = models.DateTimeField(null=True)
+
+    class Meta:
+        verbose_name = 'Chat Room'
+        verbose_name_plural = 'Chat Rooms'
+
+    def __str__(self):
+        return f"Chat {self.id} - {', '.join(user.username for user in self.participants.all())}"
+
+
+class ChatMessage(models.Model):
+    chat_room = models.ForeignKey(ChatRoom, on_delete=models.CASCADE, related_name='messages')
+    sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_messages')
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_read = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Chat Message'
+        verbose_name_plural = 'Chat Messages'
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Message from {self.sender.username} at {self.created_at}"

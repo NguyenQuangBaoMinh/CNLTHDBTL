@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import User, Post, Comment, Reaction, Event, UserProfile, Survey, Question, Choice, GroupPost, \
-    CommunityGroup, GroupMembership
+    CommunityGroup, GroupMembership, ChatRoom, ChatMessage
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -8,7 +8,12 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'student_id', 'avatar']
+        fields = ['id', 'username', 'email', 'password', 'student_id', 'avatar', 'is_verified', 'role']
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'is_verified': {'read_only': True},
+            'role': {'read_only': True}
+        }
 
     def create(self, validated_data):
         user = User.objects.create_user(
@@ -21,6 +26,13 @@ class UserSerializer(serializers.ModelSerializer):
             role='ALUMNI'
         )
         return user
+
+
+# Serializer riêng cho response login
+class UserLoginResponseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'student_id', 'avatar', 'is_verified', 'role']
 
 
 class PostSerializer(serializers.ModelSerializer):
@@ -171,3 +183,107 @@ class CommunityGroupSerializer(serializers.ModelSerializer):
             obj.posts.order_by('-created_at')[:5],
             many=True
         ).data
+
+
+class ChatUserSerializer(serializers.ModelSerializer):
+    """Serializer đơn giản cho thông tin user trong chat"""
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'avatar', 'is_active']
+
+
+class ChatMessageSerializer(serializers.ModelSerializer):
+    sender = ChatUserSerializer(read_only=True)
+
+    class Meta:
+        model = ChatMessage
+        fields = [
+            'id',
+            'chat_room',
+            'sender',
+            'content',
+            'created_at',
+            'is_read'
+        ]
+        read_only_fields = ['created_at', 'sender']
+
+    def create(self, validated_data):
+        # Tự động thêm sender từ context
+        validated_data['sender'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class ChatRoomSerializer(serializers.ModelSerializer):
+    participants = ChatUserSerializer(many=True, read_only=True)
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChatRoom
+        fields = [
+            'id',
+            'participants',
+            'created_at',
+            'updated_at',
+            'last_message',
+            'last_message_time',
+            'unread_count'
+        ]
+
+    def get_last_message(self, obj):
+        last_msg = obj.messages.order_by('-created_at').first()
+        if last_msg:
+            return {
+                'content': last_msg.content,
+                'sender': ChatUserSerializer(last_msg.sender).data,
+                'created_at': last_msg.created_at
+            }
+        return None
+
+    def get_unread_count(self, obj):
+        user = self.context['request'].user
+        return obj.messages.filter(is_read=False).exclude(sender=user).count()
+
+    def create(self, validated_data):
+        # Lấy participants từ context
+        participants = self.context.get('participants', [])
+        if not participants:
+            raise serializers.ValidationError("Participants are required")
+
+        chatroom = ChatRoom.objects.create(**validated_data)
+        chatroom.participants.set(participants)
+        return chatroom
+
+
+class ChatRoomListSerializer(serializers.ModelSerializer):
+    """Serializer nhẹ hơn cho danh sách chat rooms"""
+    other_participant = serializers.SerializerMethodField()
+    last_message_preview = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChatRoom
+        fields = [
+            'id',
+            'other_participant',
+            'last_message_preview',
+            'last_message_time',
+            'updated_at'
+        ]
+
+    def get_other_participant(self, obj):
+        current_user = self.context['request'].user
+        other_user = obj.participants.exclude(id=current_user.id).first()
+        if other_user:
+            return ChatUserSerializer(other_user).data
+        return None
+
+    def get_last_message_preview(self, obj):
+        last_msg = obj.messages.order_by('-created_at').first()
+        if last_msg:
+            return {
+                'content': last_msg.content[:50] + '...' if len(last_msg.content) > 50 else last_msg.content,
+                'is_read': last_msg.is_read,
+                'created_at': last_msg.created_at
+            }
+        return None

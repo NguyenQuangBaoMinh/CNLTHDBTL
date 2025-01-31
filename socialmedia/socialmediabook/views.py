@@ -3,6 +3,7 @@ from django.utils import timezone
 from django.shortcuts import render, redirect
 from django.views import View
 from drf_yasg.utils import swagger_auto_schema
+from oauth2_provider.models import RefreshToken
 from rest_framework import viewsets, status, permissions, parsers
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -12,13 +13,14 @@ from django.core.mail import send_mail
 from drf_yasg import openapi
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-
-from .models import User, Event, UserProfile, Survey, Question, Answer, Post, Reaction, CommunityGroup, GroupMembership
+from .models import User, Event, UserProfile, Survey, Question, Answer, Post, Reaction, CommunityGroup, GroupMembership, \
+    ChatRoom, ChatMessage, Comment
 from .paginators import get_pagination_class
 from .serializers import UserSerializer, EventSerializer, UserProfileSerializer, SurveySerializer, PostSerializer, \
     ReactionSerializer, CommentSerializer, QuestionSerializer, CommunityGroupSerializer, GroupMembershipSerializer, \
-    GroupPostSerializer
+    GroupPostSerializer, UserLoginResponseSerializer, ChatMessageSerializer, ChatRoomListSerializer, ChatRoomSerializer
 
 
 def home(request):
@@ -66,6 +68,34 @@ class UserViewSet(viewsets.ModelViewSet):
         return Response({
             'error': 'Sai thông tin đăng nhập'
         }, status=status.HTTP_401_UNAUTHORIZED)
+
+    class LoginView(APIView):
+        def post(self, request):
+            username = request.data.get('username')
+            password = request.data.get('password')
+
+            if not username or not password:
+                return Response({
+                    'error': 'Please provide both username and password'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            user = authenticate(username=username, password=password)
+
+            if user:
+                refresh = RefreshToken.for_user(user)
+
+                # Sử dụng serializer mới để lấy user data
+                user_data = UserLoginResponseSerializer(user).data
+
+                return Response({
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                    'user': user_data  # Trả về user data bao gồm is_verified
+                }, status=status.HTTP_200_OK)
+
+            return Response({
+                'error': 'Invalid credentials'
+            }, status=status.HTTP_401_UNAUTHORIZED)
 
 
 class EventViewSet(viewsets.ModelViewSet):
@@ -388,3 +418,140 @@ class CommunityGroupViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status=201)
 
         return Response(serializer.errors, status=400)
+
+
+class ChatRoomViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return ChatRoom.objects.filter(
+            participants=self.request.user
+        ).order_by('-updated_at')
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return ChatRoomListSerializer
+        return ChatRoomSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.action == 'create':
+            # Lấy participant_id từ request data
+            participant_id = self.request.data.get('participant_id')
+            if participant_id:
+                context['participants'] = [self.request.user.id, participant_id]
+        return context
+
+    @action(detail=True, methods=['POST'])
+    def mark_read(self, request, pk=None):
+        """Đánh dấu tất cả tin nhắn trong room là đã đọc"""
+        chatroom = self.get_object()
+        ChatMessage.objects.filter(
+            chat_room=chatroom,
+            is_read=False
+        ).exclude(sender=request.user).update(is_read=True)
+        return Response(status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['GET'])
+    def with_user(self, request):
+        """Lấy hoặc tạo chat room với một user cụ thể"""
+        other_user_id = request.query_params.get('user_id')
+        if not other_user_id:
+            return Response(
+                {"error": "user_id is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Tìm chat room hiện có
+        chat_room = ChatRoom.objects.filter(
+            participants=request.user
+        ).filter(
+            participants=other_user_id
+        ).first()
+
+        # Nếu không có, tạo mới
+        if not chat_room:
+            chat_room = ChatRoom.objects.create()
+            chat_room.participants.set([request.user.id, other_user_id])
+
+        serializer = self.get_serializer(chat_room)
+        return Response(serializer.data)
+
+
+class ChatMessageViewSet(viewsets.ModelViewSet):
+    serializer_class = ChatMessageSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return ChatMessage.objects.filter(
+            chat_room__participants=self.request.user
+        ).order_by('-created_at')
+
+    def perform_create(self, serializer):
+        # Kiểm tra quyền truy cập chat room
+        chat_room = serializer.validated_data['chat_room']
+        if self.request.user not in chat_room.participants.all():
+            raise permissions.PermissionDenied(
+                "You are not a participant of this chat room"
+            )
+
+        serializer.save(sender=self.request.user)
+
+        # Cập nhật last_message và last_message_time của chat room
+        chat_room.last_message = serializer.validated_data['content']
+        chat_room.last_message_time = serializer.instance.created_at
+        chat_room.save()
+
+
+
+class CommentViewSet(viewsets.ModelViewSet):
+    queryset = Comment.objects.all()
+    serializer_class = CommentSerializer
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    def get_queryset(self):
+        # Lọc comment theo post nếu có tham số
+        post_id = self.request.query_params.get('post_id', None)
+        if post_id:
+            return Comment.objects.filter(post_id=post_id)
+        return Comment.objects.all()
+
+    def perform_create(self, serializer):
+        # Lấy post_id từ request
+        post_id = self.request.data.get('post_id')
+        try:
+            post = Post.objects.get(id=post_id)
+            # Kiểm tra xem post có bị khóa comment không
+            if post.is_comments_locked:
+                return Response(
+                    {'detail': 'Comments are locked for this post.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            # Tự động gán người dùng hiện tại làm tác giả
+            serializer.save(author=self.request.user, post=post)
+        except Post.DoesNotExist:
+            return Response(
+                {'detail': 'Invalid post ID.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    def update(self, request, *args, **kwargs):
+        # Chỉ cho phép tác giả sửa comment
+        instance = self.get_object()
+        if instance.author != request.user:
+            return Response(
+                {'detail': 'You do not have permission to edit this comment.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        # Chỉ cho phép tác giả xóa comment
+        instance = self.get_object()
+        if instance.author != request.user:
+            return Response(
+                {'detail': 'You do not have permission to delete this comment.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().destroy(request, *args, **kwargs)
